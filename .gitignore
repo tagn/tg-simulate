@@ -1,0 +1,57 @@
+# Binaries
+/tg-simulate
+/dist/
+
+# Build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with go test -c
+*.test
+
+# Output of go tool cover
+*.out
+
+# Go workspace file
+go.work.sum
+
+# Dependency directory (optional; keep go.sum, remove vendor/)
+vendor/
+
+# Terragrunt / Terraform runtime files
+.terragrunt-cache/
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+*.tfstate
+*.tfstate.backup
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# tg-simulate runtime directories
+.tg-simulate-cache/
+
+# Test scratch and plan artifacts
+/tmp/
+testdata/**/.terraform/
+testdata/**/.terragrunt-cache/
+testdata/**/terraform.tfstate
+testdata/**/terraform.tfstate.backup
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
