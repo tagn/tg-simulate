@@ -341,6 +341,77 @@ func hasReplaceInPlan(t *testing.T, result *planner.PlanResult) bool {
 		strings.Contains(s, `"actions"`)
 }
 
+// --- explicit-stack: units inside .terragrunt-stack/ with include root.hcl ---
+//
+// This test covers the case where the working directory is the root of a
+// Terragrunt explicit stack (one that uses terragrunt.stack.hcl and generates
+// unit configs into .terragrunt-stack/). Units inside .terragrunt-stack/ use
+//
+//	include "root" { path = find_in_parent_folders("root.hcl") }
+//
+// and a terraform { source = "../../modules/..." } pointing to modules that live
+// outside the generated stack directory. Neither of those resolves correctly
+// without the overlay hierarchy and terraform-source fixes.
+
+func TestIntegration_ExplicitStack(t *testing.T) {
+	requireBinaries(t)
+	dir := copyFixture(t, fixtureDir(t, "explicit-stack"))
+
+	ctx := context.Background()
+	g, err := graph.Load(ctx, dir)
+	if err != nil {
+		t.Fatalf("graph.Load: %v", err)
+	}
+	if len(g.Units) != 2 {
+		t.Fatalf("expected 2 units in explicit-stack graph, got %d (units: %v)",
+			len(g.Units), unitPaths(g))
+	}
+
+	rpt, _, err := Simulate(ctx, g, Options{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Simulate: %v", err)
+	}
+
+	planned := 0
+	for _, u := range rpt.Units {
+		if u.Err != nil {
+			t.Errorf("unit %q errored: %v", u.Unit.Path, u.Err)
+		} else {
+			planned++
+		}
+	}
+	if planned != 2 {
+		t.Errorf("expected 2 planned units, got %d", planned)
+	}
+
+	// a must appear before b (b depends on a).
+	order := make([]string, 0, len(rpt.Units))
+	for _, u := range rpt.Units {
+		order = append(order, filepath.Base(u.Unit.Path))
+	}
+	if !assertOrder(order, "a", "b") {
+		t.Errorf("units not in topological order: %v", order)
+	}
+
+	// b has a simulated dependency on a — confidence must not be Real.
+	for _, u := range rpt.Units {
+		if filepath.Base(u.Unit.Path) == "b" {
+			if u.Confidence == report.ConfidenceReal {
+				t.Errorf("unit b: expected non-Real confidence (has simulated dep on a), got Real")
+			}
+		}
+	}
+}
+
+// unitPaths returns a slice of all unit paths in the graph for diagnostics.
+func unitPaths(g *graph.Graph) []string {
+	paths := make([]string, 0, len(g.Units))
+	for p := range g.Units {
+		paths = append(paths, p)
+	}
+	return paths
+}
+
 // assertOrder returns true if item a comes before item b in the slice.
 func assertOrder(order []string, a, b string) bool {
 	posA, posB := -1, -1

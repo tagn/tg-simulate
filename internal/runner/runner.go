@@ -35,7 +35,7 @@ type Options struct {
 
 // planUnitFunc and generateOverlayFunc are package-level so tests can replace them.
 var planUnitFunc = planner.PlanUnit
-var generateOverlayFunc = inject.GenerateOverlay
+var generateOverlayFunc func(*graph.Unit, *simulator.Simulation, string, string, string) (string, error) = inject.GenerateOverlay
 
 // Simulate runs the full simulation loop against g and returns the report and
 // final simulation state. Units at the same DAG level are planned concurrently;
@@ -117,7 +117,7 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			// 1. Generate overlay — reads sim under RLock so concurrent writers
 			//    at the same level don't cause a map data race.
 			simMu.RLock()
-			overlayPath, err := generateOverlayFunc(unit, sim, scratchDir, opts.MergeStrategy)
+			overlayPath, err := generateOverlayFunc(unit, sim, scratchDir, opts.MergeStrategy, opts.WorkingDir)
 			simMu.RUnlock()
 			if err != nil {
 				rptMu.Lock()
