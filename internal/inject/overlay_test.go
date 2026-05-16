@@ -76,7 +76,7 @@ func TestGenerateOverlay_NoDependencies(t *testing.T) {
 	unit := makeUnit(t, "solo", nil)
 	sim := simulator.NewSimulation()
 
-	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow")
+	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestGenerateOverlay_WithSimulatedDependency(t *testing.T) {
 		"subnet_ids": {Value: []interface{}{"sim-subnet-a", "sim-subnet-b"}, Source: simulator.SourceSynthetic, Confidence: 0.3},
 	})
 
-	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow")
+	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,13 +142,20 @@ func TestGenerateOverlay_WithSimulatedDependency(t *testing.T) {
 	if !strings.Contains(contentStr, "mock_outputs_merge_strategy_with_state") {
 		t.Error("missing mock_outputs_merge_strategy_with_state")
 	}
-	// Injected deps always use no_merge so simulated future values win over real state.
-	if !strings.Contains(contentStr, `"no_merge"`) {
-		t.Errorf("expected no_merge strategy for injected dep\n%s", content)
+	// Injected deps must set skip_outputs = true so TG skips reading the real
+	// upstream state and uses the simulated mock_outputs instead.
+	if !strings.Contains(contentStr, "skip_outputs") {
+		t.Errorf("expected skip_outputs = true on injected dep\n%s", content)
+	}
+	// The caller's mergeStrategy ("shallow") must flow through to the dep block.
+	// With skip_outputs=true the merge strategy is effectively a no-op (no state
+	// is fetched to merge with), but it should still reflect the caller's choice.
+	if !strings.Contains(contentStr, `"shallow"`) {
+		t.Errorf("expected shallow strategy for injected dep\n%s", content)
 	}
 }
 
-func TestGenerateOverlay_InjectedDepAlwaysNoMerge(t *testing.T) {
+func TestGenerateOverlay_InjectedDepHonorsStrategy(t *testing.T) {
 	depDir := t.TempDir()
 	unit := makeUnit(t, "app", map[string]*graph.DependencyConfig{
 		"db": {ConfigPath: depDir},
@@ -157,15 +164,30 @@ func TestGenerateOverlay_InjectedDepAlwaysNoMerge(t *testing.T) {
 		"endpoint": {Value: "sim-db.example.com", Source: simulator.SourceSynthetic},
 	})
 
-	// The mergeStrategy arg is irrelevant for injected deps — they always use no_merge.
-	for _, strategy := range []string{"", "shallow", "no_merge"} {
-		overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), strategy)
+	// The caller's mergeStrategy must be propagated to the injected dep block.
+	// Empty string falls back to the default ("shallow").
+	cases := []struct {
+		strategy string
+		want     string
+	}{
+		{"", "shallow"},
+		{"shallow", "shallow"},
+		{"no_merge", "no_merge"},
+		{"deep_map_only", "deep_map_only"},
+	}
+	for _, tc := range cases {
+		overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), tc.strategy, "")
 		if err != nil {
-			t.Fatalf("strategy=%q: %v", strategy, err)
+			t.Fatalf("strategy=%q: %v", tc.strategy, err)
 		}
 		content, _ := os.ReadFile(overlayPath)
-		if !strings.Contains(string(content), `"no_merge"`) {
-			t.Errorf("strategy=%q: expected no_merge for injected dep\n%s", strategy, content)
+		contentStr := string(content)
+		if !strings.Contains(contentStr, `"`+tc.want+`"`) {
+			t.Errorf("strategy=%q: expected merge strategy %q in overlay\n%s", tc.strategy, tc.want, content)
+		}
+		// skip_outputs must always be true for injected deps, regardless of strategy.
+		if !strings.Contains(contentStr, "skip_outputs") {
+			t.Errorf("strategy=%q: expected skip_outputs = true\n%s", tc.strategy, content)
 		}
 	}
 }
@@ -178,7 +200,7 @@ func TestGenerateOverlay_SkipsDependencyWithNoSimOutputs(t *testing.T) {
 	// Simulation has no outputs for depDir.
 	sim := simulator.NewSimulation()
 
-	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow")
+	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +226,7 @@ func TestGenerateOverlay_CopiesSourceFiles(t *testing.T) {
 	}
 	sim := simulator.NewSimulation()
 
-	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow")
+	overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), "shallow", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +245,7 @@ func TestGenerateOverlay_OutputPathInScratchDir(t *testing.T) {
 	unit := makeUnit(t, "app", nil)
 	sim := simulator.NewSimulation()
 
-	overlayPath, err := GenerateOverlay(unit, sim, scratchDir, "shallow")
+	overlayPath, err := GenerateOverlay(unit, sim, scratchDir, "shallow", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +290,7 @@ func TestGenerateOverlay_MultipleDepsDeterministic(t *testing.T) {
 
 func mustOverlay(t *testing.T, unit *graph.Unit, sim *simulator.Simulation, scratchDir, strategy string) string {
 	t.Helper()
-	p, err := GenerateOverlay(unit, sim, scratchDir, strategy)
+	p, err := GenerateOverlay(unit, sim, scratchDir, strategy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,6 +325,62 @@ func TestToCtyValue_Types(t *testing.T) {
 				t.Errorf("toCtyValue(%v): returned NilVal", c.input)
 			}
 		})
+	}
+}
+
+// TestGenerateOverlay_ExplicitStackHierarchy exercises the ancestor-HCL-copy
+// and relative-overlay-path behaviour needed for explicit stacks.
+//
+// It sets up a miniature stack layout:
+//
+//	workingDir/
+//	  root.hcl        ← shared config (find_in_parent_folders target)
+//	  .terragrunt-stack/
+//	    a/
+//	      terragrunt.hcl
+//
+// and asserts that after GenerateOverlay the scratch directory mirrors this
+// layout so that root.hcl lands at <scratch>/root.hcl (accessible via
+// find_in_parent_folders from <scratch>/.terragrunt-stack/a/).
+func TestGenerateOverlay_ExplicitStackHierarchy(t *testing.T) {
+	workingDir := t.TempDir()
+
+	// Create root.hcl in the working dir (simulates the shared stack config).
+	rootHCL := filepath.Join(workingDir, "root.hcl")
+	if err := os.WriteFile(rootHCL, []byte("# root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the unit inside .terragrunt-stack/a/.
+	unitDir := filepath.Join(workingDir, ".terragrunt-stack", "a")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "terragrunt.hcl"), []byte("# no deps\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	unit := &graph.Unit{
+		Path:   unitDir,
+		Config: &graph.TerragruntConfig{Dependencies: map[string]*graph.DependencyConfig{}},
+	}
+	sim := simulator.NewSimulation()
+	scratchDir := t.TempDir()
+
+	overlayPath, err := GenerateOverlay(unit, sim, scratchDir, "shallow", workingDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Overlay should be at <scratch>/.terragrunt-stack/a/terragrunt.hcl.
+	wantOverlay := filepath.Join(scratchDir, ".terragrunt-stack", "a", "terragrunt.hcl")
+	if overlayPath != wantOverlay {
+		t.Errorf("overlay path = %q, want %q", overlayPath, wantOverlay)
+	}
+
+	// root.hcl must have been copied to the scratch root so find_in_parent_folders works.
+	if _, err := os.Stat(filepath.Join(scratchDir, "root.hcl")); os.IsNotExist(err) {
+		t.Error("root.hcl was not copied to scratch root (find_in_parent_folders would fail)")
 	}
 }
 

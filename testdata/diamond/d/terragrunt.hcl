@@ -27,7 +27,7 @@ remote_state {
 dependency "b" {
   config_path = "../b"
   mock_outputs = {
-    resource_id = "sim-00000000-0000-0000-0000-000000000002"
+    db_id = "sim-00000000-0000-0000-0000-000000000002"
   }
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "apply"]
 }
@@ -35,12 +35,12 @@ dependency "b" {
 dependency "c" {
   config_path = "../c"
   mock_outputs = {
-    resource_id = "sim-00000000-0000-0000-0000-000000000003"
+    cache_id = "sim-00000000-0000-0000-0000-000000000003"
   }
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "apply"]
 }
 
 inputs = {
-  upstream_b_id = dependency.b.outputs.resource_id
-  upstream_c_id = dependency.c.outputs.resource_id
+  upstream_db_id    = dependency.b.outputs.db_id
+  upstream_cache_id = dependency.c.outputs.cache_id
 }

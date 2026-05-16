@@ -24,7 +24,7 @@ func planSuccess(unit *graph.Unit) *planner.PlanResult {
 // restores them via t.Cleanup.
 func setupMocks(t *testing.T,
 	planFn func(context.Context, *graph.Unit, planner.PlanOptions) (*planner.PlanResult, error),
-	overlayFn func(*graph.Unit, *simulator.Simulation, string, string) (string, error),
+	overlayFn func(*graph.Unit, *simulator.Simulation, string, string, string) (string, error),
 ) {
 	t.Helper()
 	origPlan, origOverlay := planUnitFunc, generateOverlayFunc
@@ -36,7 +36,7 @@ func setupMocks(t *testing.T,
 	})
 }
 
-func noopOverlay(unit *graph.Unit, sim *simulator.Simulation, scratchDir, strategy string) (string, error) {
+func noopOverlay(unit *graph.Unit, sim *simulator.Simulation, scratchDir, strategy, workingDir string) (string, error) {
 	return filepath.Join(scratchDir, "overlay.hcl"), nil
 }
 
@@ -136,7 +136,7 @@ func TestSimulate_OverlayErrorCollected(t *testing.T) {
 		func(_ context.Context, unit *graph.Unit, _ planner.PlanOptions) (*planner.PlanResult, error) {
 			return planSuccess(unit), nil
 		},
-		func(_ *graph.Unit, _ *simulator.Simulation, _, _ string) (string, error) {
+		func(_ *graph.Unit, _ *simulator.Simulation, _, _, _ string) (string, error) {
 			return "", errors.New("hclwrite: disk full")
 		},
 	)

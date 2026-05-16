@@ -23,6 +23,7 @@ vendor/
 
 # Terragrunt / Terraform runtime files
 .terragrunt-cache/
+.terragrunt-stack/
 .terraform/
 .terraform.lock.hcl
 *.tfplan
@@ -55,3 +56,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Claude artifacts
+.claude

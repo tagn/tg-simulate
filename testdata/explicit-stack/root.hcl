@@ -1,3 +1,6 @@
+# Root config shared by all units in this fixture.
+# Lives outside .terragrunt-stack/ — units locate it via find_in_parent_folders("root.hcl").
+
 generate "provider" {
   path      = "provider.tf"
   if_exists = "overwrite"
@@ -22,16 +25,4 @@ remote_state {
   config = {
     path = "${get_terragrunt_dir()}/terraform.tfstate"
   }
-}
-
-dependency "a" {
-  config_path = "../a"
-  mock_outputs = {
-    vpc_id = "sim-00000000-0000-0000-0000-000000000001"
-  }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "apply"]
-}
-
-inputs = {
-  upstream_vpc_id = dependency.a.outputs.vpc_id
 }

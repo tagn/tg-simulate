@@ -5,7 +5,7 @@ TF_BINARY ?= tofu
 # Install destination (defaults to GOPATH/bin, which is usually on PATH)
 INSTALL_DIR ?= $(shell go env GOPATH)/bin
 
-.PHONY: build install test test-integration test-all lint fmt vet run-simple-chain run-diamond run-greenfield clean help
+.PHONY: build install test test-integration test-all lint fmt vet run-simple-chain run-diamond run-greenfield run-explicit-stack run-with-changes run-infra-pipeline run-platform-stack clean help
 
 ## build: compile the binary into the project root
 build:
@@ -50,6 +50,50 @@ run-diamond: build
 ## run-greenfield: simulate the single-unit greenfield fixture
 run-greenfield: build
 	TF_BINARY=$(TF_BINARY) ./$(BINARY) run --working-dir ./testdata/greenfield
+
+## run-explicit-stack: simulate the explicit-stack fixture (units defined via terragrunt.stack.hcl)
+run-explicit-stack: build
+	TF_BINARY=$(TF_BINARY) ./$(BINARY) run --working-dir ./testdata/explicit-stack
+
+## run-infra-pipeline: apply the infra-pipeline fixture then re-simulate after changing VPC cidr_block
+##   Shows 3-hop force-new cascade: vpc → database → app all replaced.
+run-infra-pipeline: build
+	@TMPDIR=$$(mktemp -d) && \
+	cp -r ./testdata/infra-pipeline/. "$$TMPDIR/" && \
+	echo "=== Applied state (cidr 10.0.0.0/16) ===" && \
+	(cd "$$TMPDIR/vpc"      && TG_TF_PATH=$(TF_BINARY) terragrunt run apply -- -auto-approve 2>/dev/null) && \
+	(cd "$$TMPDIR/database" && TG_TF_PATH=$(TF_BINARY) terragrunt run apply -- -auto-approve 2>/dev/null) && \
+	(cd "$$TMPDIR/app"      && TG_TF_PATH=$(TF_BINARY) terragrunt run apply -- -auto-approve 2>/dev/null) && \
+	echo "" && \
+	echo "=== Simulation: baseline (no code change) ===" && \
+	TF_BINARY=$(TF_BINARY) ./$(BINARY) run --working-dir "$$TMPDIR" && \
+	echo "" && \
+	echo "=== Changing vpc/terragrunt.hcl: cidr 10.0.0.0/16 → 10.1.0.0/16 ===" && \
+	sed -i '' 's/10\.0\.0\.0\/16/10.1.0.0\/16/g' "$$TMPDIR/vpc/terragrunt.hcl" && \
+	echo "" && \
+	echo "=== Simulation: after VPC CIDR change ===" && \
+	TF_BINARY=$(TF_BINARY) ./$(BINARY) run --working-dir "$$TMPDIR" ; \
+	rm -rf "$$TMPDIR"
+
+## run-platform-stack: apply the platform-stack fixture then re-simulate after bumping network_version
+##   Shows force-new cascade through an explicit stack: network → storage → platform all replaced.
+run-platform-stack: build
+	@TMPDIR=$$(mktemp -d) && \
+	cp -r ./testdata/platform-stack/. "$$TMPDIR/" && \
+	echo "=== Applied state (network_version v1) ===" && \
+	(cd "$$TMPDIR/.terragrunt-stack/network"  && TG_TF_PATH=$(TF_BINARY) terragrunt run apply -- -auto-approve 2>/dev/null) && \
+	(cd "$$TMPDIR/.terragrunt-stack/storage"  && TG_TF_PATH=$(TF_BINARY) terragrunt run apply -- -auto-approve 2>/dev/null) && \
+	(cd "$$TMPDIR/.terragrunt-stack/platform" && TG_TF_PATH=$(TF_BINARY) terragrunt run apply -- -auto-approve 2>/dev/null) && \
+	echo "" && \
+	echo "=== Simulation: baseline (no code change) ===" && \
+	TF_BINARY=$(TF_BINARY) ./$(BINARY) run --working-dir "$$TMPDIR" && \
+	echo "" && \
+	echo "=== Changing .terragrunt-stack/network/terragrunt.hcl: v1 → v2 ===" && \
+	sed -i '' 's/"v1"/"v2"/' "$$TMPDIR/.terragrunt-stack/network/terragrunt.hcl" && \
+	echo "" && \
+	echo "=== Simulation: after network_version bump ===" && \
+	TF_BINARY=$(TF_BINARY) ./$(BINARY) run --working-dir "$$TMPDIR" ; \
+	rm -rf "$$TMPDIR"
 
 ## run-with-changes: apply the with-changes fixture then re-simulate after changing a trigger
 ##   Copies the fixture to a temp dir so the source tree stays clean.

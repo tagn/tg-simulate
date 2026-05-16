@@ -8,6 +8,6 @@ resource "null_resource" "this" {
   }
 }
 
-output "resource_id" {
+output "vpc_id" {
   value = null_resource.this.id
 }
