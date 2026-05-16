@@ -1,9 +1,9 @@
 resource "null_resource" "this" {
   triggers = {
-    upstream_id = var.upstream_id
+    network_id = var.upstream_network_id
   }
 }
 
-output "resource_id" {
+output "service_id" {
   value = null_resource.this.id
 }

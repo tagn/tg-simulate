@@ -44,6 +44,14 @@ func GenerateOverlay(unit *graph.Unit, sim *simulator.Simulation, scratchDir, me
 		mergeStrategy = "shallow"
 	}
 
+	// Resolve workingDir to absolute once so all path comparisons below work
+	// correctly when the caller passes a relative path (e.g. "./testdata/foo").
+	if workingDir != "" {
+		if abs, err := filepath.Abs(workingDir); err == nil {
+			workingDir = abs
+		}
+	}
+
 	overlayDir := filepath.Join(scratchDir, overlayRelPath(unit.Path, workingDir))
 	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
 		return "", fmt.Errorf("creating overlay dir: %w", err)
@@ -76,6 +84,12 @@ func GenerateOverlay(unit *graph.Unit, sim *simulator.Simulation, scratchDir, me
 // back to a flat sanitized name derived from the absolute unit path.
 func overlayRelPath(unitPath, workingDir string) string {
 	if workingDir != "" {
+		// Resolve workingDir to absolute so filepath.Rel works correctly when the
+		// caller passes a relative path (e.g. "./testdata/foo") but unitPath is
+		// already absolute (as produced by graph.Load → EvalSymlinks).
+		if absWD, err := filepath.Abs(workingDir); err == nil {
+			workingDir = absWD
+		}
 		if rel, err := filepath.Rel(workingDir, unitPath); err == nil && !strings.HasPrefix(rel, "..") {
 			return rel
 		}
@@ -222,15 +236,16 @@ func patchTerragruntHCL(path string, unit *graph.Unit, sim *simulator.Simulation
 			if err != nil {
 				return fmt.Errorf("dependency %q: %w", label, err)
 			}
+			// skip_outputs prevents TG from reading the upstream dependency's real state.
+			// Without this, TG reads real state even when mock_outputs are set, and the
+			// merge strategy ends up using stale pre-apply values instead of the
+			// simulated future values.
+			block.Body().SetAttributeValue("skip_outputs", cty.BoolVal(true))
 			block.Body().SetAttributeValue("mock_outputs", mockCty)
 			block.Body().SetAttributeValue("mock_outputs_allowed_terraform_commands",
 				cty.ListVal([]cty.Value{cty.StringVal("plan"), cty.StringVal("validate")}))
-			// Always use no_merge so the simulated (future) values override any real
-			// current state. The whole point of the simulation is to predict what WILL
-			// happen after upstream changes are applied, so the simulated values must
-			// win over the current (pre-apply) state.
 			block.Body().SetAttributeValue("mock_outputs_merge_strategy_with_state",
-				cty.StringVal("no_merge"))
+				cty.StringVal(mergeStrategy))
 
 		case "terraform":
 			patchTerraformSource(block.Body(), unit.Path)

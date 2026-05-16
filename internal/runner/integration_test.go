@@ -403,6 +403,188 @@ func TestIntegration_ExplicitStack(t *testing.T) {
 	}
 }
 
+// --- infra-pipeline: 3-tier implicit stack with multi-output propagation ---
+//
+// Topology: vpc → database → app
+//
+// vpc outputs vpc_id and cidr_block; database consumes both and outputs
+// db_endpoint (computed from vpc_id) and db_port; app consumes db_endpoint
+// and outputs instance_id and app_url.
+//
+// The test applies the stack at cidr_block="10.0.0.0/16", then changes the
+// CIDR to "10.1.0.0/16" in vpc/terragrunt.hcl.  This replaces the VPC
+// (new vpc_id), which changes db_endpoint in database (replaced), which
+// changes instance_id/app_url in app (replaced) — a 3-hop cascade.
+
+func TestIntegration_InfraPipeline(t *testing.T) {
+	requireBinaries(t)
+
+	dir := copyFixture(t, fixtureDir(t, "infra-pipeline"))
+	ctx := context.Background()
+
+	// Step 1: Apply to establish real state at cidr_block="10.0.0.0/16".
+	tgApply(t, dir)
+
+	// Step 2: Baseline simulate — no pending changes.
+	g, err := graph.Load(ctx, dir)
+	if err != nil {
+		t.Fatalf("graph.Load (baseline): %v", err)
+	}
+	rpt, _, err := Simulate(ctx, g, Options{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Simulate (baseline): %v", err)
+	}
+	for _, u := range rpt.Units {
+		if u.Err != nil {
+			t.Errorf("baseline: unit %q errored: %v", u.Unit.Path, u.Err)
+		}
+	}
+
+	// Step 3: Change the VPC CIDR from "10.0.0.0/16" to "10.1.0.0/16".
+	vpcHCL := filepath.Join(dir, "vpc", "terragrunt.hcl")
+	content, err := os.ReadFile(vpcHCL)
+	if err != nil {
+		t.Fatalf("reading vpc/terragrunt.hcl: %v", err)
+	}
+	modified := strings.ReplaceAll(string(content), `"10.0.0.0/16"`, `"10.1.0.0/16"`)
+	if err := os.WriteFile(vpcHCL, []byte(modified), 0o644); err != nil {
+		t.Fatalf("modifying vpc/terragrunt.hcl: %v", err)
+	}
+
+	// Step 4: Re-simulate and verify the cascade.
+	g2, err := graph.Load(ctx, dir)
+	if err != nil {
+		t.Fatalf("graph.Load (post-change): %v", err)
+	}
+	rpt2, _, err := Simulate(ctx, g2, Options{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Simulate (post-change): %v", err)
+	}
+
+	vpcReplaced, dbReplaced, appReplaced := false, false, false
+	for _, u := range rpt2.Units {
+		if u.Err != nil {
+			t.Errorf("post-change: unit %q errored: %v", u.Unit.Path, u.Err)
+			continue
+		}
+		switch filepath.Base(u.Unit.Path) {
+		case "vpc":
+			vpcReplaced = hasReplaceInPlan(t, u.PlanResult)
+		case "database":
+			dbReplaced = hasReplaceInPlan(t, u.PlanResult)
+		case "app":
+			appReplaced = hasReplaceInPlan(t, u.PlanResult)
+		}
+	}
+	if !vpcReplaced {
+		t.Error("vpc: expected replace after cidr_block change")
+	}
+	if !dbReplaced {
+		t.Error("database: expected replace after upstream vpc_id changed")
+	}
+	if !appReplaced {
+		t.Error("app: expected replace after upstream db_endpoint changed")
+	}
+}
+
+// --- platform-stack: 3-unit explicit stack with multi-output propagation ---
+//
+// Topology: network → storage, network → platform, storage → platform
+//   (platform depends on both network and storage)
+//
+// network outputs network_id and network_version; storage consumes network_id
+// and outputs bucket_name and storage_url; platform consumes network_id and
+// bucket_name and outputs platform_id and platform_url.
+//
+// The test applies the stack at network_version="v1", then bumps the version
+// to "v2" in .terragrunt-stack/network/terragrunt.hcl — replacing the network
+// resource, which cascades into storage and then platform.
+
+func TestIntegration_PlatformStack(t *testing.T) {
+	requireBinaries(t)
+
+	dir := copyFixture(t, fixtureDir(t, "platform-stack"))
+	ctx := context.Background()
+
+	// Step 1: Apply to establish real state at network_version="v1".
+	tgApply(t, dir)
+
+	// Step 2: Baseline simulate — no pending changes.
+	g, err := graph.Load(ctx, dir)
+	if err != nil {
+		t.Fatalf("graph.Load (baseline): %v", err)
+	}
+	if len(g.Units) != 3 {
+		t.Fatalf("expected 3 units in platform-stack graph, got %d (units: %v)",
+			len(g.Units), unitPaths(g))
+	}
+	rpt, _, err := Simulate(ctx, g, Options{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Simulate (baseline): %v", err)
+	}
+	for _, u := range rpt.Units {
+		if u.Err != nil {
+			t.Errorf("baseline: unit %q errored: %v", u.Unit.Path, u.Err)
+		}
+	}
+
+	// Step 3: Bump network_version from "v1" to "v2".
+	netHCL := filepath.Join(dir, ".terragrunt-stack", "network", "terragrunt.hcl")
+	content, err := os.ReadFile(netHCL)
+	if err != nil {
+		t.Fatalf("reading .terragrunt-stack/network/terragrunt.hcl: %v", err)
+	}
+	modified := strings.ReplaceAll(string(content), `"v1"`, `"v2"`)
+	if err := os.WriteFile(netHCL, []byte(modified), 0o644); err != nil {
+		t.Fatalf("modifying network/terragrunt.hcl: %v", err)
+	}
+
+	// Step 4: Re-simulate and verify the cascade.
+	g2, err := graph.Load(ctx, dir)
+	if err != nil {
+		t.Fatalf("graph.Load (post-change): %v", err)
+	}
+	rpt2, _, err := Simulate(ctx, g2, Options{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Simulate (post-change): %v", err)
+	}
+
+	networkReplaced, storageReplaced, platformReplaced := false, false, false
+	for _, u := range rpt2.Units {
+		if u.Err != nil {
+			t.Errorf("post-change: unit %q errored: %v", u.Unit.Path, u.Err)
+			continue
+		}
+		switch filepath.Base(u.Unit.Path) {
+		case "network":
+			networkReplaced = hasReplaceInPlan(t, u.PlanResult)
+		case "storage":
+			storageReplaced = hasReplaceInPlan(t, u.PlanResult)
+		case "platform":
+			platformReplaced = hasReplaceInPlan(t, u.PlanResult)
+		}
+	}
+	if !networkReplaced {
+		t.Error("network: expected replace after network_version bump")
+	}
+	if !storageReplaced {
+		t.Error("storage: expected replace after upstream network_id changed")
+	}
+	if !platformReplaced {
+		t.Error("platform: expected replace after upstream network_id and bucket_name changed")
+	}
+
+	// platform depends on both network and storage — its confidence must be non-Real
+	// even at baseline since it has simulated upstream inputs.
+	for _, u := range rpt.Units {
+		if filepath.Base(u.Unit.Path) == "platform" {
+			if u.Confidence == report.ConfidenceReal {
+				t.Error("platform: expected non-Real confidence (has simulated deps), got Real")
+			}
+		}
+	}
+}
+
 // unitPaths returns a slice of all unit paths in the graph for diagnostics.
 func unitPaths(g *graph.Graph) []string {
 	paths := make([]string, 0, len(g.Units))

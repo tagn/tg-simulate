@@ -142,13 +142,20 @@ func TestGenerateOverlay_WithSimulatedDependency(t *testing.T) {
 	if !strings.Contains(contentStr, "mock_outputs_merge_strategy_with_state") {
 		t.Error("missing mock_outputs_merge_strategy_with_state")
 	}
-	// Injected deps always use no_merge so simulated future values win over real state.
-	if !strings.Contains(contentStr, `"no_merge"`) {
-		t.Errorf("expected no_merge strategy for injected dep\n%s", content)
+	// Injected deps must set skip_outputs = true so TG skips reading the real
+	// upstream state and uses the simulated mock_outputs instead.
+	if !strings.Contains(contentStr, "skip_outputs") {
+		t.Errorf("expected skip_outputs = true on injected dep\n%s", content)
+	}
+	// The caller's mergeStrategy ("shallow") must flow through to the dep block.
+	// With skip_outputs=true the merge strategy is effectively a no-op (no state
+	// is fetched to merge with), but it should still reflect the caller's choice.
+	if !strings.Contains(contentStr, `"shallow"`) {
+		t.Errorf("expected shallow strategy for injected dep\n%s", content)
 	}
 }
 
-func TestGenerateOverlay_InjectedDepAlwaysNoMerge(t *testing.T) {
+func TestGenerateOverlay_InjectedDepHonorsStrategy(t *testing.T) {
 	depDir := t.TempDir()
 	unit := makeUnit(t, "app", map[string]*graph.DependencyConfig{
 		"db": {ConfigPath: depDir},
@@ -157,15 +164,30 @@ func TestGenerateOverlay_InjectedDepAlwaysNoMerge(t *testing.T) {
 		"endpoint": {Value: "sim-db.example.com", Source: simulator.SourceSynthetic},
 	})
 
-	// The mergeStrategy arg is irrelevant for injected deps — they always use no_merge.
-	for _, strategy := range []string{"", "shallow", "no_merge"} {
-		overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), strategy, "")
+	// The caller's mergeStrategy must be propagated to the injected dep block.
+	// Empty string falls back to the default ("shallow").
+	cases := []struct {
+		strategy string
+		want     string
+	}{
+		{"", "shallow"},
+		{"shallow", "shallow"},
+		{"no_merge", "no_merge"},
+		{"deep_map_only", "deep_map_only"},
+	}
+	for _, tc := range cases {
+		overlayPath, err := GenerateOverlay(unit, sim, t.TempDir(), tc.strategy, "")
 		if err != nil {
-			t.Fatalf("strategy=%q: %v", strategy, err)
+			t.Fatalf("strategy=%q: %v", tc.strategy, err)
 		}
 		content, _ := os.ReadFile(overlayPath)
-		if !strings.Contains(string(content), `"no_merge"`) {
-			t.Errorf("strategy=%q: expected no_merge for injected dep\n%s", strategy, content)
+		contentStr := string(content)
+		if !strings.Contains(contentStr, `"`+tc.want+`"`) {
+			t.Errorf("strategy=%q: expected merge strategy %q in overlay\n%s", tc.strategy, tc.want, content)
+		}
+		// skip_outputs must always be true for injected deps, regardless of strategy.
+		if !strings.Contains(contentStr, "skip_outputs") {
+			t.Errorf("strategy=%q: expected skip_outputs = true\n%s", tc.strategy, content)
 		}
 	}
 }

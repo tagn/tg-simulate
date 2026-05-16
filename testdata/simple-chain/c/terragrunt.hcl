@@ -27,11 +27,11 @@ remote_state {
 dependency "b" {
   config_path = "../b"
   mock_outputs = {
-    resource_id = "sim-00000000-0000-0000-0000-000000000002"
+    subnet_id = "sim-00000000-0000-0000-0000-000000000002"
   }
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "apply"]
 }
 
 inputs = {
-  upstream_id = dependency.b.outputs.resource_id
+  upstream_subnet_id = dependency.b.outputs.subnet_id
 }

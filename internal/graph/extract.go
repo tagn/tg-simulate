@@ -31,9 +31,16 @@ func parseDOT(dot []byte, workingDir string) (*Graph, error) {
 
 	units := make(map[string]*Unit)
 
+	// Resolve workingDir once for comparison so we can skip the stack-root
+	// node ("." in explicit-stack DOT output) which is not a deployable unit.
+	resolvedWorkingDir := resolvePath(workingDir, workingDir)
+
 	// Collect all nodes first so isolated units (no edges) are included.
 	for name := range parsed.Nodes.Lookup {
 		abs := resolvePath(unquote(name), workingDir)
+		if abs == resolvedWorkingDir {
+			continue // stack root is not a deployable unit
+		}
 		if _, ok := units[abs]; !ok {
 			units[abs] = &Unit{
 				Path:         abs,
@@ -47,6 +54,10 @@ func parseDOT(dot []byte, workingDir string) (*Graph, error) {
 	for _, edge := range parsed.Edges.Edges {
 		srcPath := resolvePath(unquote(edge.Src), workingDir)
 		dstPath := resolvePath(unquote(edge.Dst), workingDir)
+
+		if srcPath == resolvedWorkingDir || dstPath == resolvedWorkingDir {
+			continue // skip edges involving the stack-root pseudo-node
+		}
 
 		// Ensure both nodes exist (they should, but be defensive).
 		if _, ok := units[srcPath]; !ok {

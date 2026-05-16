@@ -1,13 +1,13 @@
-variable "upstream_id" {
+variable "upstream_network_id" {
   type = string
 }
 
 resource "null_resource" "this" {
   triggers = {
-    upstream_id = var.upstream_id
+    network_id = var.upstream_network_id
   }
 }
 
-output "resource_id" {
+output "subnet_id" {
   value = null_resource.this.id
 }

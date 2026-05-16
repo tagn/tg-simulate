@@ -4,6 +4,6 @@ resource "null_resource" "this" {
   }
 }
 
-output "resource_id" {
+output "network_id" {
   value = null_resource.this.id
 }

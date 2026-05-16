@@ -13,7 +13,7 @@ and the local backend so no cloud credentials are required.
 go test -tags integration -timeout 10m ./internal/runner/...
 
 # Run a single fixture's test:
-go test -tags integration -timeout 5m ./internal/runner/... -run TestIntegration_ExplicitStack
+go test -tags integration -timeout 5m ./internal/runner/... -run TestIntegration_PlatformStack
 
 # Use OpenTofu instead of Terraform:
 TF_BINARY=tofu go test -tags integration -timeout 10m ./internal/runner/...
@@ -28,12 +28,14 @@ TF_BINARY=tofu go test -tags integration -timeout 10m ./internal/runner/...
 ```
 simple-chain/
 ├── root.hcl          shared provider + local backend
-├── a/                no dependencies; outputs resource_id
-├── b/                depends on a; passes resource_id downstream
-└── c/                depends on b
+├── a/                no dependencies; outputs network_id
+├── b/                depends on a; outputs subnet_id
+└── c/                depends on b; outputs instance_id
 ```
 
 Covers: basic topological ordering, output propagation one hop at a time.
+
+Data flow: `a.network_id` → `b.upstream_network_id` → `b.subnet_id` → `c.upstream_subnet_id` → `c.instance_id`
 
 ---
 
@@ -42,13 +44,17 @@ Covers: basic topological ordering, output propagation one hop at a time.
 ```
 diamond/
 ├── root.hcl
-├── a/                root of the diamond
-├── b/                depends on a
-├── c/                depends on a
-└── d/                depends on both b and c
+├── a/                root of the diamond; outputs vpc_id
+├── b/                depends on a; outputs db_id
+├── c/                depends on a; outputs cache_id
+└── d/                depends on both b and c; outputs service_id
 ```
 
 Covers: fan-out / fan-in, confidence level when both inputs are simulated.
+
+Data flow:
+- `a.vpc_id` fans out to both `b` (as `upstream_vpc_id`) and `c` (as `upstream_vpc_id`)
+- `b.db_id` and `c.cache_id` fan in to `d` as `upstream_db_id` and `upstream_cache_id`
 
 ---
 
@@ -57,25 +63,73 @@ Covers: fan-out / fan-in, confidence level when both inputs are simulated.
 ```
 greenfield/
 ├── root.hcl
-└── a/                no dependencies; resource not yet applied
+└── a/                no dependencies; resource not yet applied; outputs resource_id
 ```
 
 Covers: first-time plan (all creates), synthetic output generation.
 
 ---
 
-### `with-changes` — force-new propagation
+### `with-changes` — force-new propagation (2-unit implicit stack)
 
 ```
 with-changes/
 ├── root.hcl
-├── a/                trigger attribute controls resource replacement
-└── b/                depends on a; replaced when a's trigger changes
+├── a/                trigger attribute controls resource replacement; outputs vpc_id
+└── b/                depends on a; outputs subnet_id; replaced when a's vpc_id changes
 ```
 
 Covers: detecting downstream resource replacement after an upstream
 `force_new` attribute changes.  The test applies state at `trigger = "v1"`,
 then changes the trigger to `"v2"` and verifies that B's plan shows a replace.
+
+---
+
+### `infra-pipeline` — 3-tier implicit stack with cascading propagation
+
+```
+infra-pipeline/
+├── root.hcl
+├── vpc/              no dependencies; outputs vpc_id, cidr_block
+├── database/         depends on vpc; outputs db_endpoint, db_port
+└── app/              depends on database; outputs instance_id, app_url
+```
+
+Covers: multi-hop force-new propagation with distinct, semantically meaningful
+outputs at each tier.  The change scenario replaces the VPC by updating
+`cidr_block` from `"10.0.0.0/16"` to `"10.1.0.0/16"` in `vpc/terragrunt.hcl`,
+which cascades through all three tiers:
+
+1. VPC replaced → new `vpc_id`
+2. Database replaced (trigger on `vpc_id`) → new `db_endpoint`
+3. App replaced (trigger on `db_endpoint`) → new `instance_id` and `app_url`
+
+Data flow:
+```
+vpc.vpc_id      → database.vpc_id      → (null_resource.database.id)
+vpc.cidr_block  → database.vpc_cidr    → (db_endpoint suffix)
+database.db_endpoint → app.db_endpoint → (null_resource.app triggers)
+database.db_port     → app.db_port
+app.instance_id      (null_resource.app.id)
+app.app_url          ("https://app-<id>.example.com")
+```
+
+#### Manual walkthrough
+
+```bash
+# Apply initial state.
+cd testdata/infra-pipeline
+terragrunt run --all apply --non-interactive
+
+# Simulate with no pending changes (baseline).
+go run ./cmd/tg-simulate run --working-dir testdata/infra-pipeline
+
+# Change cidr_block to trigger the cascade.
+sed -i '' 's/10.0.0.0\/16/10.1.0.0\/16/' testdata/infra-pipeline/vpc/terragrunt.hcl
+
+# Re-simulate — all three units should show replacements.
+go run ./cmd/tg-simulate run --working-dir testdata/infra-pipeline
+```
 
 ---
 
@@ -86,8 +140,8 @@ explicit-stack/
 ├── root.hcl                      shared config (outside .terragrunt-stack/)
 ├── terragrunt.stack.hcl          stack definition (reference only)
 ├── modules/
-│   ├── a/main.tf                 null_resource → outputs resource_id
-│   └── b/{main,variables}.tf    null_resource that consumes upstream_id
+│   ├── a/main.tf                 null_resource → outputs network_id
+│   └── b/{main,variables}.tf    null_resource that consumes upstream_network_id; outputs service_id
 └── .terragrunt-stack/            pre-generated by terragrunt stack generate
     ├── a/terragrunt.hcl          terraform source + include root.hcl
     └── b/terragrunt.hcl          terraform source + include root.hcl + dep on a
@@ -103,6 +157,44 @@ Covers: the two problems specific to explicit stacks:
    is relative to the unit directory.  `tg-simulate` absolutizes this path in
    the overlay so TG can locate the module regardless of where the overlay is.
 
+---
+
+### `platform-stack` — 3-unit explicit stack with multi-output propagation
+
+```
+platform-stack/
+├── root.hcl                          shared config (outside .terragrunt-stack/)
+├── terragrunt.stack.hcl              stack definition
+├── modules/
+│   ├── network/main.tf               outputs network_id, network_version
+│   ├── storage/{main,variables}.tf   outputs bucket_name, storage_url
+│   └── platform/{main,variables}.tf  outputs platform_id, platform_url
+└── .terragrunt-stack/                pre-generated by terragrunt stack generate
+    ├── network/terragrunt.hcl
+    ├── storage/terragrunt.hcl         depends on network
+    └── platform/terragrunt.hcl        depends on network + storage
+```
+
+Covers: explicit stack with a partial-diamond topology (network fans out to
+both storage and platform; storage also feeds platform), exercising:
+- `find_in_parent_folders` resolution (same as `explicit-stack`)
+- Relative terraform source paths
+- Multi-input fan-in confidence scoring at the platform unit
+- Force-new cascade: bumping `network_version` in `.terragrunt-stack/network/terragrunt.hcl`
+  from `"v1"` to `"v2"` replaces the network, which cascades to storage and
+  then platform.
+
+Data flow:
+```
+network.network_id  → storage.network_id   → (null_resource.storage.id)
+                    → platform.network_id
+network.network_version (not consumed downstream)
+storage.bucket_name → platform.bucket_name → (null_resource.platform triggers)
+storage.storage_url (not consumed downstream)
+platform.platform_id  (null_resource.platform.id)
+platform.platform_url ("https://platform-<id>.example.com")
+```
+
 #### Re-generating `.terragrunt-stack/` (optional)
 
 The `.terragrunt-stack/` directory is checked in so tests run without
@@ -110,47 +202,51 @@ executing `terragrunt stack generate`.  To regenerate it after editing
 `terragrunt.stack.hcl`:
 
 ```bash
-cd testdata/explicit-stack
+cd testdata/platform-stack
 terragrunt stack generate
 ```
 
 #### Manual walkthrough
 
 ```bash
-# 1. Apply the stack to establish real state (optional — tests work without it).
-cd testdata/explicit-stack
+# Apply initial state.
+cd testdata/platform-stack
 terragrunt stack run -- apply --non-interactive
 
-# 2. Run tg-simulate from the stack root (same working directory as step 1).
-go run ./cmd/tg-simulate run --working-dir testdata/explicit-stack
+# Simulate with no pending changes (baseline).
+go run ./cmd/tg-simulate run --working-dir testdata/platform-stack
 
-# 3. Inspect the simulation report (default: text; also supports --format markdown|json).
-go run ./cmd/tg-simulate run \
-  --working-dir testdata/explicit-stack \
-  --format markdown
+# Bump network_version to trigger the cascade.
+sed -i '' 's/"v1"/"v2"/' testdata/platform-stack/.terragrunt-stack/network/terragrunt.hcl
 
-# 4. Trace where a specific output value came from.
-go run ./cmd/tg-simulate explain \
-  --working-dir testdata/explicit-stack \
-  --unit .terragrunt-stack/b \
-  --output resource_id
+# Re-simulate — all three units should show replacements.
+go run ./cmd/tg-simulate run --working-dir testdata/platform-stack --format markdown
 ```
 
-Expected simulation output (greenfield, no prior apply):
+Expected simulation output after the version bump (no prior apply):
 
 ```
-Stack simulation — 2 units
+Stack simulation — 3 units
 ──────────────────────────
-🟡 .terragrunt-stack/a  [1 change]
-     + null_resource.this (create)
+🟡 .terragrunt-stack/network  [1 change]
+     ~ null_resource.network (replace)
    outputs:
-     resource_id  →  sim-<uuid>  (synthetic)
+     network_id       →  <unknown>  (synthetic)
+     network_version  →  v2
 
-🔴 .terragrunt-stack/b  [1 change — simulated inputs]
-     + null_resource.this (create)
-   simulated inputs:  a.resource_id
+🔴 .terragrunt-stack/storage  [1 change — simulated inputs]
+     ~ null_resource.storage (replace)
+   simulated inputs:  network.network_id
    outputs:
-     resource_id  →  sim-<uuid>  (synthetic)
+     bucket_name  →  sim-<uuid>  (synthetic)
+     storage_url  →  sim-<uuid>  (synthetic)
+
+🔴 .terragrunt-stack/platform  [1 change — simulated inputs]
+     ~ null_resource.platform (replace)
+   simulated inputs:  network.network_id, storage.bucket_name
+   outputs:
+     platform_id   →  sim-<uuid>  (synthetic)
+     platform_url  →  sim-<uuid>  (synthetic)
 ```
 
 Confidence legend: 🟢 real state  🟡 partially simulated  🔴 fully synthetic
