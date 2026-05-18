@@ -34,6 +34,7 @@ func newRunCmd() *cobra.Command {
 		outputFile    string
 		mergeStrategy string
 		concurrency   int
+		inPlace       bool
 	)
 
 	cmd := &cobra.Command{
@@ -42,19 +43,15 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			g, err := graph.Load(ctx, workingDir)
+			// Discover all nested stacks under workingDir. When none are found
+			// (e.g. a plain directory-based stack without .stack.hcl files),
+			// fall back to treating workingDir itself as a single stack.
+			stackDirs, err := graph.DiscoverStacks(workingDir)
 			if err != nil {
-				return fmt.Errorf("loading graph: %w", err)
+				return fmt.Errorf("discovering stacks: %w", err)
 			}
-
-			rpt, _, err := runner.Simulate(ctx, g, runner.Options{
-				WorkingDir:    workingDir,
-				TargetUnit:    unit,
-				MergeStrategy: mergeStrategy,
-				Concurrency:   concurrency,
-			})
-			if err != nil {
-				return err
+			if len(stackDirs) == 0 {
+				stackDirs = []string{workingDir}
 			}
 
 			w := os.Stdout
@@ -67,11 +64,51 @@ func newRunCmd() *cobra.Command {
 				w = f
 			}
 
-			if err := rpt.Render(w, report.Format(format)); err != nil {
-				return fmt.Errorf("rendering report: %w", err)
+			// Simulate each stack independently, passing sim state forward so
+			// downstream stacks can reference upstream outputs as mock inputs.
+			var sharedSim *simulator.Simulation
+			hasErrors := false
+
+			for i, stackDir := range stackDirs {
+				g, err := graph.Load(ctx, stackDir)
+				if err != nil {
+					return fmt.Errorf("loading graph for stack %s: %w", stackDir, err)
+				}
+
+				rpt, sim, err := runner.Simulate(ctx, g, runner.Options{
+					WorkingDir:    stackDir,
+					TargetUnit:    unit,
+					MergeStrategy: mergeStrategy,
+					Concurrency:   concurrency,
+					InPlace:       inPlace,
+					InitialSim:    sharedSim,
+				})
+				if err != nil {
+					return err
+				}
+
+				sharedSim = sim
+
+				// When there are multiple stacks, print a header identifying each one.
+				if len(stackDirs) > 1 {
+					fmt.Fprintf(w, "\n=== Stack: %s ===\n\n", stackDir)
+				}
+
+				if err := rpt.Render(w, report.Format(format)); err != nil {
+					return fmt.Errorf("rendering report for stack %s: %w", stackDir, err)
+				}
+
+				if rpt.HasErrors() {
+					hasErrors = true
+				}
+
+				// Print separator between stacks (except after the last one).
+				if len(stackDirs) > 1 && i < len(stackDirs)-1 {
+					fmt.Fprintln(w)
+				}
 			}
 
-			if rpt.HasErrors() {
+			if hasErrors {
 				os.Exit(2)
 			}
 			return nil
@@ -84,6 +121,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputFile, "output-file", "", "Write report to file instead of stdout")
 	cmd.Flags().StringVar(&mergeStrategy, "merge-strategy", "shallow", "mock_outputs_merge_strategy_with_state value")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 0, "Max units planned in parallel (default: GOMAXPROCS)")
+	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Run overlays inside --working-dir instead of /tmp (preserves git context)")
 
 	return cmd
 }
