@@ -68,6 +68,7 @@ func newRunCmd() *cobra.Command {
 			// downstream stacks can reference upstream outputs as mock inputs.
 			var sharedSim *simulator.Simulation
 			hasErrors := false
+			streaming := report.Format(format) != report.FormatJSON
 
 			for i, stackDir := range stackDirs {
 				g, err := graph.Load(ctx, stackDir)
@@ -75,36 +76,48 @@ func newRunCmd() *cobra.Command {
 					return fmt.Errorf("loading graph for stack %s: %w", stackDir, err)
 				}
 
-				rpt, sim, err := runner.Simulate(ctx, g, runner.Options{
+				// When there are multiple stacks, print a per-stack header.
+				if len(stackDirs) > 1 {
+					if i > 0 {
+						fmt.Fprintln(w)
+					}
+					fmt.Fprintf(w, "=== Stack: %s ===\n\n", stackDir)
+				}
+
+				opts := runner.Options{
 					WorkingDir:    stackDir,
 					TargetUnit:    unit,
 					MergeStrategy: mergeStrategy,
 					Concurrency:   concurrency,
 					InPlace:       inPlace,
 					InitialSim:    sharedSim,
-				})
+				}
+
+				if streaming {
+					// Emit the report header once, then stream each unit as it
+					// finishes. The summary is deferred until all units are done.
+					report.RenderHeader(w, report.Format(format))
+					opts.OnUnitDone = func(ur *report.UnitReport) {
+						report.RenderUnit(w, ur, report.Format(format))
+					}
+				}
+
+				rpt, sim, err := runner.Simulate(ctx, g, opts)
 				if err != nil {
 					return err
 				}
-
 				sharedSim = sim
 
-				// When there are multiple stacks, print a header identifying each one.
-				if len(stackDirs) > 1 {
-					fmt.Fprintf(w, "\n=== Stack: %s ===\n\n", stackDir)
-				}
-
-				if err := rpt.Render(w, report.Format(format)); err != nil {
-					return fmt.Errorf("rendering report for stack %s: %w", stackDir, err)
+				if streaming {
+					rpt.RenderSummary(w, report.Format(format))
+				} else {
+					if err := rpt.Render(w, report.Format(format)); err != nil {
+						return fmt.Errorf("rendering report for stack %s: %w", stackDir, err)
+					}
 				}
 
 				if rpt.HasErrors() {
 					hasErrors = true
-				}
-
-				// Print separator between stacks (except after the last one).
-				if len(stackDirs) > 1 && i < len(stackDirs)-1 {
-					fmt.Fprintln(w)
 				}
 			}
 

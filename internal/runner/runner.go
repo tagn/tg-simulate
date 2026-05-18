@@ -39,6 +39,10 @@ type Options struct {
 	// Used when processing nested stacks in sequence so upstream stack outputs
 	// are available as mock inputs for downstream stacks.
 	InitialSim *simulator.Simulation
+	// OnUnitDone is called (under an internal mutex) immediately after each
+	// unit's result is recorded. Use this to stream per-unit output as plans
+	// complete rather than waiting for the full report.
+	OnUnitDone func(*report.UnitReport)
 }
 
 // planUnitFunc and generateOverlayFunc are package-level so tests can replace them.
@@ -139,6 +143,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			if err != nil {
 				rptMu.Lock()
 				rpt.AddError(unit, fmt.Errorf("overlay: %w", err))
+				if opts.OnUnitDone != nil {
+					opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+				}
 				rptMu.Unlock()
 				return nil
 			}
@@ -151,6 +158,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			if err != nil {
 				rptMu.Lock()
 				rpt.AddError(unit, fmt.Errorf("plan: %w", err))
+				if opts.OnUnitDone != nil {
+					opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+				}
 				rptMu.Unlock()
 				return nil
 			}
@@ -160,6 +170,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			if err != nil {
 				rptMu.Lock()
 				rpt.AddError(unit, fmt.Errorf("extract deltas: %w", err))
+				if opts.OnUnitDone != nil {
+					opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+				}
 				rptMu.Unlock()
 				return nil
 			}
@@ -178,6 +191,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 
 			rptMu.Lock()
 			rpt.AddUnit(unit, planResult, deltas, confidence, simulatedInputs)
+			if opts.OnUnitDone != nil {
+				opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+			}
 			rptMu.Unlock()
 
 			return nil
