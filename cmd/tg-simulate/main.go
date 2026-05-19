@@ -60,7 +60,7 @@ func newRunCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("opening output file: %w", err)
 				}
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				w = f
 			}
 
@@ -79,9 +79,9 @@ func newRunCmd() *cobra.Command {
 				// When there are multiple stacks, print a per-stack header.
 				if len(stackDirs) > 1 {
 					if i > 0 {
-						fmt.Fprintln(w)
+						_, _ = fmt.Fprintln(w)
 					}
-					fmt.Fprintf(w, "=== Stack: %s ===\n\n", stackDir)
+					_, _ = fmt.Fprintf(w, "=== Stack: %s ===\n\n", stackDir)
 				}
 
 				opts := runner.Options{

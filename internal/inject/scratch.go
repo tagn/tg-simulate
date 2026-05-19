@@ -38,7 +38,7 @@ func NewInPlaceScratchDir(workingDir string) (string, error) {
 // Cleanup removes the scratch directory and all overlay files within it.
 // Safe to call multiple times; errors are silently ignored after the first removal.
 func Cleanup(scratchDir string) {
-	os.RemoveAll(scratchDir)
+	_ = os.RemoveAll(scratchDir)
 }
 
 // RegisterCleanup installs a signal handler that removes scratchDir before the

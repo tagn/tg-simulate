@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tagn/tg-simulate/internal/graph"
@@ -95,10 +96,10 @@ func TestSimulate_ProcessesInTopologicalOrder(t *testing.T) {
 func TestSimulate_CollectsPerUnitErrors(t *testing.T) {
 	g, root := buildGraph(t, nil, "a", "b")
 
-	callCount := 0
+	var callCount atomic.Int64
 	setupMocks(t,
 		func(_ context.Context, unit *graph.Unit, _ planner.PlanOptions) (*planner.PlanResult, error) {
-			callCount++
+			callCount.Add(1)
 			if filepath.Base(unit.Path) == "a" {
 				return nil, errors.New("provider error")
 			}
@@ -112,8 +113,8 @@ func TestSimulate_CollectsPerUnitErrors(t *testing.T) {
 		t.Fatalf("expected nil top-level error, got: %v", err)
 	}
 	// Both units attempted.
-	if callCount != 2 {
-		t.Errorf("expected 2 plan calls, got %d", callCount)
+	if n := callCount.Load(); n != 2 {
+		t.Errorf("expected 2 plan calls, got %d", n)
 	}
 	var errCount int
 	for _, u := range rpt.Units {
