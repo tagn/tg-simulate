@@ -103,11 +103,6 @@ func simulateLikeList(name string, existing []interface{}) []interface{} {
 	return out
 }
 
-// simulateLikeMap generates a map with the same keys, synthetic values.
-func simulateLikeMap(name string, existing map[string]interface{}) map[string]interface{} {
-	return simulateLikeMapDepth(name, existing, 1)
-}
-
 func simulateLikeMapDepth(name string, existing map[string]interface{}, depth int) map[string]interface{} {
 	out := make(map[string]interface{}, len(existing))
 	for k, v := range existing {
@@ -237,7 +232,7 @@ func isUUIDLike(s string) bool {
 			}
 			continue
 		}
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}

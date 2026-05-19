@@ -28,16 +28,16 @@ func (s *Simulation) Save(path string) error {
 	closeErr := f.Close()
 
 	if encErr != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("encoding simulation state: %w", encErr)
 	}
 	if closeErr != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("closing simulation state file: %w", closeErr)
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("committing simulation state: %w", err)
 	}
 	return nil
@@ -49,7 +49,7 @@ func Load(path string) (*Simulation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening simulation state: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var s Simulation
 	if err := json.NewDecoder(f).Decode(&s); err != nil {

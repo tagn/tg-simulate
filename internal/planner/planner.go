@@ -43,7 +43,7 @@ func PlanUnit(ctx context.Context, unit *graph.Unit, opts PlanOptions) (*PlanRes
 	if err != nil {
 		return nil, fmt.Errorf("unit %q: creating temp dir: %w", unit.Path, err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	planFile := filepath.Join(tmpDir, "tfplan.binary")
 

@@ -11,9 +11,20 @@ import (
 )
 
 func renderText(w io.Writer, r *Report) error {
-	fmt.Fprintln(w, "=== tg-simulate Report ===")
-	fmt.Fprintln(w)
+	renderTextHeader(w)
+	renderTextSummary(w, r)
+	for _, u := range r.Units {
+		renderUnitText(w, u)
+	}
+	return nil
+}
 
+func renderTextHeader(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "=== tg-simulate Report ===")
+	_, _ = fmt.Fprintln(w)
+}
+
+func renderTextSummary(w io.Writer, r *Report) {
 	var nReal, nPartial, nSynthetic, nErr int
 	for _, u := range r.Units {
 		if u.Err != nil {
@@ -29,53 +40,50 @@ func renderText(w io.Writer, r *Report) error {
 			nSynthetic++
 		}
 	}
-
-	fmt.Fprintf(w, "Summary: %d unit(s) planned", len(r.Units)-nErr)
+	_, _ = fmt.Fprintf(w, "Summary: %d unit(s) planned", len(r.Units)-nErr)
 	if nErr > 0 {
-		fmt.Fprintf(w, ", %d error(s)", nErr)
+		_, _ = fmt.Fprintf(w, ", %d error(s)", nErr)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  🟢 real: %d  🟡 partial: %d  🔴 synthetic: %d\n", nReal, nPartial, nSynthetic)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  🟢 real: %d  🟡 partial: %d  🔴 synthetic: %d\n", nReal, nPartial, nSynthetic)
+	_, _ = fmt.Fprintln(w)
+}
 
-	for _, u := range r.Units {
-		displayName := unitDisplayName(u.Unit.Path)
-		confidenceLabel := confidenceText(u.Confidence)
+func renderUnitText(w io.Writer, u *UnitReport) {
+	displayName := unitDisplayName(u.Unit.Path)
+	confidenceLabel := confidenceText(u.Confidence)
 
-		fmt.Fprintf(w, "--- %s (%s) ---\n", displayName, confidenceLabel)
+	_, _ = fmt.Fprintf(w, "--- %s (%s) ---\n", displayName, confidenceLabel)
 
-		if u.Err != nil {
-			fmt.Fprintf(w, "  ERROR: %v\n\n", u.Err)
-			continue
-		}
-
-		if u.PlanResult != nil && len(u.PlanResult.PlanJSON) > 0 {
-			plan, err := tfplan.Parse(u.PlanResult.PlanJSON)
-			if err == nil {
-				s := tfplan.Summarize(plan)
-				fmt.Fprintf(w, "  Resources: +%d ~%d -%d\n", s.Add, s.Change, s.Destroy)
-				for _, rd := range tfplan.ResourceDetails(plan) {
-					fmt.Fprintf(w, "    %s %s\n", resourceActionPrefix(rd.Action), rd.Address)
-				}
-			}
-		}
-
-		if len(u.OutputDeltas) > 0 {
-			fmt.Fprintln(w, "  Outputs:")
-			for _, d := range u.OutputDeltas {
-				fmt.Fprintf(w, "    %-30s [%-7s]  %s\n", d.Name, d.Action, formatDeltaValue(d))
-			}
-		}
-
-		if len(u.SimulatedInputs) > 0 {
-			fmt.Fprintf(w, "  Simulated inputs: %s\n", strings.Join(u.SimulatedInputs, ", "))
-			fmt.Fprintln(w, "  ⚠️  Uses synthetic upstream values — some diffs may resolve to no-op at apply")
-		}
-
-		fmt.Fprintln(w)
+	if u.Err != nil {
+		_, _ = fmt.Fprintf(w, "  ERROR: %v\n\n", u.Err)
+		return
 	}
 
-	return nil
+	if u.PlanResult != nil && len(u.PlanResult.PlanJSON) > 0 {
+		plan, err := tfplan.Parse(u.PlanResult.PlanJSON)
+		if err == nil {
+			s := tfplan.Summarize(plan)
+			_, _ = fmt.Fprintf(w, "  Resources: +%d ~%d -%d\n", s.Add, s.Change, s.Destroy)
+			for _, rd := range tfplan.ResourceDetails(plan) {
+				_, _ = fmt.Fprintf(w, "    %s %s\n", resourceActionPrefix(rd.Action), rd.Address)
+			}
+		}
+	}
+
+	if len(u.OutputDeltas) > 0 {
+		_, _ = fmt.Fprintln(w, "  Outputs:")
+		for _, d := range u.OutputDeltas {
+			_, _ = fmt.Fprintf(w, "    %-30s [%-7s]  %s\n", d.Name, d.Action, formatDeltaValue(d))
+		}
+	}
+
+	if len(u.SimulatedInputs) > 0 {
+		_, _ = fmt.Fprintf(w, "  Simulated inputs: %s\n", strings.Join(u.SimulatedInputs, ", "))
+		_, _ = fmt.Fprintln(w, "  ⚠️  Uses synthetic upstream values — some diffs may resolve to no-op at apply")
+	}
+
+	_, _ = fmt.Fprintln(w)
 }
 
 func unitDisplayName(absPath string) string {

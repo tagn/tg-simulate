@@ -31,6 +31,18 @@ type Options struct {
 	// Concurrency is the maximum number of units planned in parallel.
 	// Defaults to runtime.GOMAXPROCS(0) when zero.
 	Concurrency int
+	// InPlace places the scratch directory inside WorkingDir instead of /tmp.
+	// This preserves git context for Terragrunt commands that need it (e.g.
+	// functions that read .git metadata like run_cmd("git", ...)).
+	InPlace bool
+	// InitialSim seeds this simulation with outputs from a previous run.
+	// Used when processing nested stacks in sequence so upstream stack outputs
+	// are available as mock inputs for downstream stacks.
+	InitialSim *simulator.Simulation
+	// OnUnitDone is called (under an internal mutex) immediately after each
+	// unit's result is recorded. Use this to stream per-unit output as plans
+	// complete rather than waiting for the full report.
+	OnUnitDone func(*report.UnitReport)
 }
 
 // planUnitFunc and generateOverlayFunc are package-level so tests can replace them.
@@ -63,7 +75,13 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 		}
 	}
 
-	scratchDir, err := inject.NewScratchDir()
+	var scratchDir string
+	var err error
+	if opts.InPlace {
+		scratchDir, err = inject.NewInPlaceScratchDir(opts.WorkingDir)
+	} else {
+		scratchDir, err = inject.NewScratchDir()
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -72,6 +90,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 	defer inject.Cleanup(scratchDir)
 
 	sim := simulator.NewSimulation()
+	if opts.InitialSim != nil {
+		sim.MergeFrom(opts.InitialSim)
+	}
 	rpt := report.NewReport()
 
 	// Pre-build mock hints to avoid O(N²) per-unit scanning.
@@ -122,6 +143,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			if err != nil {
 				rptMu.Lock()
 				rpt.AddError(unit, fmt.Errorf("overlay: %w", err))
+				if opts.OnUnitDone != nil {
+					opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+				}
 				rptMu.Unlock()
 				return nil
 			}
@@ -134,6 +158,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			if err != nil {
 				rptMu.Lock()
 				rpt.AddError(unit, fmt.Errorf("plan: %w", err))
+				if opts.OnUnitDone != nil {
+					opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+				}
 				rptMu.Unlock()
 				return nil
 			}
@@ -143,6 +170,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 			if err != nil {
 				rptMu.Lock()
 				rpt.AddError(unit, fmt.Errorf("extract deltas: %w", err))
+				if opts.OnUnitDone != nil {
+					opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+				}
 				rptMu.Unlock()
 				return nil
 			}
@@ -161,6 +191,9 @@ func Simulate(ctx context.Context, g *graph.Graph, opts Options) (*report.Report
 
 			rptMu.Lock()
 			rpt.AddUnit(unit, planResult, deltas, confidence, simulatedInputs)
+			if opts.OnUnitDone != nil {
+				opts.OnUnitDone(rpt.Units[len(rpt.Units)-1])
+			}
 			rptMu.Unlock()
 
 			return nil

@@ -28,7 +28,7 @@ func TestCleanup_RemovesDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	Cleanup(dir)
 

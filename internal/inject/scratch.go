@@ -17,10 +17,28 @@ func NewScratchDir() (string, error) {
 	return dir, nil
 }
 
+// NewInPlaceScratchDir creates a scratch directory inside workingDir rather
+// than in the OS temp directory. This keeps the overlay files within the
+// repository, so Terragrunt commands that rely on git context (e.g.
+// run_cmd("git", "rev-parse", "--show-toplevel")) continue to work correctly.
+//
+// The created directory matches .tg-simulate-* so callers can add that pattern
+// to .gitignore to avoid accidentally committing overlays.
+func NewInPlaceScratchDir(workingDir string) (string, error) {
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return "", fmt.Errorf("ensuring working dir exists: %w", err)
+	}
+	dir, err := os.MkdirTemp(workingDir, ".tg-simulate-*")
+	if err != nil {
+		return "", fmt.Errorf("creating in-place scratch dir: %w", err)
+	}
+	return dir, nil
+}
+
 // Cleanup removes the scratch directory and all overlay files within it.
 // Safe to call multiple times; errors are silently ignored after the first removal.
 func Cleanup(scratchDir string) {
-	os.RemoveAll(scratchDir)
+	_ = os.RemoveAll(scratchDir)
 }
 
 // RegisterCleanup installs a signal handler that removes scratchDir before the

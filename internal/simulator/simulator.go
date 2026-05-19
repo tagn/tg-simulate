@@ -38,6 +38,17 @@ func (s *Simulation) SetOutputs(unitPath string, outputs map[string]SimulatedOut
 	s.UnitOutputs[unitPath] = outputs
 }
 
+// MergeFrom copies all unit outputs from src into s without overwriting
+// entries that already exist in s. This is used to seed a downstream stack
+// simulation with outputs produced by an upstream stack.
+func (s *Simulation) MergeFrom(src *Simulation) {
+	for unitPath, outputs := range src.UnitOutputs {
+		if _, exists := s.UnitOutputs[unitPath]; !exists {
+			s.UnitOutputs[unitPath] = outputs
+		}
+	}
+}
+
 // OutputDelta describes how a single output changes in a plan.
 type OutputDelta struct {
 	Name        string
